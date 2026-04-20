@@ -16,6 +16,8 @@ const COLORS = [
   '#E30613','#1565C0','#2E7D32','#E65100',
   '#6A1B9A','#00838F','#558B2F','#4527A0',
 ];
+const AUTO_PROGRESS_STREET = '__AUTO_PROGRESS__';
+const AUTO_PROGRESS_MIN_DISTANCE_M = 35;
 
 // ─── App-State ───────────────────────────────────────────────────────────────
 const S = {
@@ -36,6 +38,7 @@ const S = {
   teams:          {},
   members:        {},
   ownMarker:      null,
+  lastAutoProgress: null,
   streetToastTimer: null,
   currentStreet:  '',
   channels:       [],
@@ -294,11 +297,12 @@ function startLocTracking() {
 function fetchAndSendLoc() {
   if (S.isPaused || !navigator.geolocation) return;
   navigator.geolocation.getCurrentPosition(
-    pos => {
+    async pos => {
       S.currentLat = pos.coords.latitude;
       S.currentLng = pos.coords.longitude;
-      sendMyLoc(S.currentLat, S.currentLng);
       updateOwnMarker(S.currentLat, S.currentLng);
+      await sendMyLoc(S.currentLat, S.currentLng);
+      await maybeAutoMarkProgress(S.currentLat, S.currentLng);
     },
     null,
     { enableHighAccuracy: false, timeout: 10_000, maximumAge: 25_000 }
@@ -320,6 +324,69 @@ async function clearMyLoc() {
   await db.from('locations')
     .update({ is_paused: true, updated_at: new Date().toISOString() })
     .eq('event_id', S.event.id).eq('user_uid', S.user.uid);
+}
+
+function isAutoProgressRow(row) {
+  return row?.street === AUTO_PROGRESS_STREET;
+}
+
+function distanceMeters(a, b) {
+  const R = 6371000;
+  const toRad = deg => deg * Math.PI / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const sinLat = Math.sin(dLat / 2);
+  const sinLng = Math.sin(dLng / 2);
+  const h = sinLat * sinLat + Math.cos(lat1) * Math.cos(lat2) * sinLng * sinLng;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function pointInPolygon(point, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].lng, yi = polygon[i].lat;
+    const xj = polygon[j].lng, yj = polygon[j].lat;
+    const intersects = ((yi > point.lat) !== (yj > point.lat))
+      && (point.lng < ((xj - xi) * (point.lat - yi)) / ((yj - yi) || 1e-9) + xi);
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+async function maybeAutoMarkProgress(lat, lng) {
+  if (!S.event || S.user.role !== 'member' || !S.user.teamId || S.isPaused) return;
+
+  const team = S.teams[S.user.teamId];
+  if (!team?.area_paths?.length) return;
+
+  const point = { lat, lng };
+  if (!pointInPolygon(point, team.area_paths)) return;
+
+  const last = S.lastAutoProgress;
+  if (last && last.teamId === S.user.teamId && distanceMeters(last, point) < AUTO_PROGRESS_MIN_DISTANCE_M) {
+    return;
+  }
+
+  const row = {
+    event_id: S.event.id,
+    lat,
+    lng,
+    street: AUTO_PROGRESS_STREET,
+    number: null,
+    team_id: S.user.teamId || null,
+    marked_by: S.user.uid,
+    marked_by_name: S.user.name,
+  };
+
+  const { error } = await db.from('visited').insert(row);
+  if (error) {
+    console.error(error);
+    return;
+  }
+
+  S.lastAutoProgress = { lat, lng, teamId: S.user.teamId };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -396,7 +463,17 @@ function subscribeVisited() {
     .on('postgres_changes', {
       event: 'INSERT', schema: 'public', table: 'visited',
       filter: `event_id=eq.${S.event.id}`,
-    }, payload => { if (payload.new) addVisitedMarker(payload.new); }).subscribe();
+    }, payload => {
+      if (!payload.new) return;
+      addVisitedMarker(payload.new);
+      if (isAutoProgressRow(payload.new) && payload.new.marked_by === S.user.uid) {
+        S.lastAutoProgress = {
+          lat: payload.new.lat,
+          lng: payload.new.lng,
+          teamId: payload.new.team_id || null,
+        };
+      }
+    }).subscribe();
   S.channels.push(ch);
 }
 
@@ -404,7 +481,16 @@ async function loadVisited() {
   const { data } = await db.from('visited').select('*').eq('event_id', S.event.id);
   S.visitedMarkers.forEach(m => m.remove());
   S.visitedMarkers = [];
-  (data || []).forEach(addVisitedMarker);
+  let lastOwnAuto = null;
+  (data || []).forEach(row => {
+    addVisitedMarker(row);
+    if (isAutoProgressRow(row) && row.marked_by === S.user.uid) {
+      if (!lastOwnAuto || new Date(row.created_at) > new Date(lastOwnAuto.created_at)) lastOwnAuto = row;
+    }
+  });
+  S.lastAutoProgress = lastOwnAuto
+    ? { lat: lastOwnAuto.lat, lng: lastOwnAuto.lng, teamId: lastOwnAuto.team_id || null }
+    : null;
 }
 
 function subscribeMembers() {
@@ -676,6 +762,26 @@ function centerOnAll() {
 // ─────────────────────────────────────────────────────────────────────────────
 //  EVENT CODE
 // ─────────────────────────────────────────────────────────────────────────────
+
+function addVisitedMarker(row) {
+  if (!S.map) return;
+  const isAuto = isAutoProgressRow(row);
+  const label = isAuto ? '' : [row.street, row.number].filter(Boolean).join(' ');
+  const time  = new Date(row.created_at).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+  const m = L.circleMarker([row.lat, row.lng], isAuto ? {
+    radius: 16, fillColor: '#2E7D32', fillOpacity: 0.14,
+    color: '#2E7D32', weight: 1, opacity: 0.55, zIndexOffset: 300,
+  } : {
+    radius: 8, fillColor: '#2E7D32', fillOpacity: 0.9,
+    color: 'white', weight: 2, zIndexOffset: 500,
+  }).addTo(S.map);
+  m.bindPopup(
+    isAuto
+      ? `<small style="color:#777">Automatisch markiert ${time} Â· ${esc(row.marked_by_name || '')}</small>`
+      : `${label ? `<strong>${esc(label)}</strong><br>` : ''}<small style="color:#777">Besucht ${time} Â· ${esc(row.marked_by_name || '')}</small>`
+  );
+  S.visitedMarkers.push(m);
+}
 
 function copyEventCode() { copyText(S.event.code); showToast(`Code "${S.event.code}" kopiert!`); }
 

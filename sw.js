@@ -4,13 +4,13 @@
    Offline-Fallback für statische Dateien.
    ========================================= */
 
-const CACHE = 'malteser-v1';
+const CACHE = 'malteser-v2';
 const STATIC = [
   './',
   './index.html',
   './app.css',
   './app.js',
-  './firebase-config.js',
+  './config.js',
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png',
@@ -32,7 +32,7 @@ self.addEventListener('activate', evt => {
   );
 });
 
-// Fetch: Cache-first für eigene Dateien, Network-first für externe APIs
+// Fetch: Für App-Shell zuerst Netzwerk, damit neue Deployments nicht an altem Cache hängen.
 self.addEventListener('fetch', evt => {
   if (evt.request.method !== 'GET') return;
 
@@ -46,8 +46,17 @@ self.addEventListener('fetch', evt => {
     return; // browser handles it normally
   }
 
-  // Eigene Dateien: Cache-first
-  evt.respondWith(
-    caches.match(evt.request).then(cached => cached || fetch(evt.request))
-  );
+  const isOwnAsset = url.startsWith(self.location.origin);
+
+  if (isOwnAsset) {
+    evt.respondWith(
+      fetch(evt.request)
+        .then(res => {
+          const copy = res.clone();
+          caches.open(CACHE).then(c => c.put(evt.request, copy)).catch(() => {});
+          return res;
+        })
+        .catch(() => caches.match(evt.request))
+    );
+  }
 });

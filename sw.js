@@ -10,6 +10,7 @@ const STATIC = [
   './index.html',
   './app.css',
   './app.js',
+  './leaflet-google-shim.js',
   './config.js',
   './manifest.json',
   './icons/icon-192.png',

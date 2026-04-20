@@ -126,6 +126,28 @@ html, body {
 .logo-text strong { display: block; font-size: 1.25em; color: var(--red); }
 .logo-text span { font-size: .85em; color: var(--gray-500); }
 
+.login-heading {
+  margin-bottom: 22px;
+}
+.login-heading h1 {
+  font-size: 1.35em;
+  color: #1f2937;
+  margin-bottom: 8px;
+}
+.login-heading p,
+.login-note {
+  color: var(--gray-500);
+  font-size: .92em;
+  line-height: 1.5;
+}
+.stack-actions {
+  display: grid;
+  gap: 10px;
+}
+.login-note {
+  margin-top: 14px;
+}
+
 /* Fields */
 .field { margin-bottom: 16px; }
 .field label {
@@ -499,6 +521,11 @@ html, body {
   z-index: 1;
 }
 .sheet-header h2 { font-size: 1.05em; font-weight: 700; }
+.sheet-subtitle {
+  color: var(--gray-500);
+  font-size: .82em;
+  margin-top: 2px;
+}
 .sheet-close {
   background: var(--gray-100);
   border: none;
@@ -583,17 +610,20 @@ html, body {
 .team-name { font-weight: 700; font-size: .92em; }
 .team-sub  { font-size: .78em; color: var(--gray-500); margin-top: 2px; }
 .team-del  {
-  background: none; border: none;
+  background: none;
+  border: none;
   color: var(--gray-500);
-  font-size: 1.1em;
+  font-size: .8em;
   cursor: pointer;
-  padding: 4px;
+  padding: 4px 0 4px 8px;
+  white-space: nowrap;
 }
 
 /* Member items */
 .member-item {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 10px 0;
   border-bottom: 1px solid var(--gray-100);
@@ -621,6 +651,125 @@ html, body {
   background: white;
   cursor: pointer;
   flex-shrink: 0;
+}
+
+.request-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 220;
+  background: rgba(0,0,0,.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+.request-card {
+  width: min(480px, 100%);
+  background: white;
+  border-radius: 22px;
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
+}
+.request-header {
+  position: static;
+}
+.request-body {
+  padding: 20px 20px 24px;
+}
+.request-result {
+  margin-top: 8px;
+  border-radius: var(--radius);
+  background: rgba(46,125,50,.08);
+  border: 1px solid rgba(46,125,50,.18);
+  padding: 16px;
+}
+.request-result-title {
+  font-size: .82em;
+  font-weight: 700;
+  color: var(--gray-500);
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+.request-code {
+  font-size: 2em;
+  font-weight: 800;
+  letter-spacing: 6px;
+  color: var(--green);
+  margin: 6px 0 10px;
+}
+.request-result p {
+  color: #1f2937;
+  font-size: .9em;
+  line-height: 1.45;
+  margin-bottom: 8px;
+}
+
+.summary-box {
+  background: var(--gray-100);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.summary-title {
+  font-weight: 700;
+  font-size: 1em;
+}
+.summary-copy {
+  margin-top: 4px;
+  color: var(--gray-500);
+  font-size: .88em;
+  line-height: 1.45;
+}
+
+.meta-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--gray-100);
+  color: var(--gray-700);
+  font-size: .72em;
+  font-weight: 700;
+  margin-left: 6px;
+}
+.meta-pill.is-online {
+  background: rgba(46,125,50,.1);
+  color: var(--green);
+}
+
+.user-item {
+  gap: 12px;
+}
+.user-actions {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  padding-left: 48px;
+}
+.field-inline label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--gray-500);
+  font-size: .72em;
+  text-transform: uppercase;
+  letter-spacing: .45px;
+  font-weight: 700;
+}
+.field-inline .team-select {
+  width: 100%;
+  padding: 9px 10px;
+  font-size: .85em;
+}
+
+.chip {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (min-width: 620px) {
+  .user-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 /* Backdrop */

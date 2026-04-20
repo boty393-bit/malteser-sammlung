@@ -4,7 +4,7 @@
    Offline-Fallback für statische Dateien.
    ========================================= */
 
-const CACHE = 'malteser-v2';
+const CACHE = 'malteser-v3';
 const STATIC = [
   './',
   './index.html',

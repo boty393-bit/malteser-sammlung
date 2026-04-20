@@ -238,8 +238,10 @@ html, body {
    MAP SCREEN
    ========================================= */
 #screen-map {
-  position: relative;
+  position: fixed;
+  inset: 0;
   background: #f3f4f6;
+  overflow: hidden;
 }
 
 #map {

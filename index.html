@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#E30613">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Sammlung">
+  <title>Malteser Sammlung</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+  <!-- ===================== LOADING ===================== -->
+  <div id="loading" class="loading-overlay">
+    <div class="loading-inner">
+      <div class="spinner"></div>
+      <div id="loading-text">Verbinde…</div>
+    </div>
+  </div>
+
+  <!-- ===================== LOGIN SCREEN ===================== -->
+  <div id="screen-login" class="screen">
+    <div class="login-scroll">
+      <div class="login-card">
+
+        <div class="logo-area">
+          <div class="logo-cross">
+            <div class="cross-h"></div>
+            <div class="cross-v"></div>
+          </div>
+          <div class="logo-text">
+            <strong>Malteser</strong>
+            <span>Spendensammlung</span>
+          </div>
+        </div>
+
+        <!-- Name -->
+        <div class="field">
+          <label for="input-name">Dein Name</label>
+          <input type="text" id="input-name" placeholder="z.B. Max M." maxlength="30" autocomplete="nickname">
+        </div>
+
+        <!-- Role toggle -->
+        <div class="role-row">
+          <button class="role-btn active" data-role="member" onclick="selectRole('member')">
+            <span>🚶</span> Sammler
+          </button>
+          <button class="role-btn" data-role="tc" onclick="selectRole('tc')">
+            <span>👑</span> TeamCoach
+          </button>
+        </div>
+
+        <!-- Member: join -->
+        <div id="join-section">
+          <div class="field">
+            <label for="input-code">Event-Code</label>
+            <input type="text" id="input-code" placeholder="ABC123" maxlength="6"
+              autocomplete="off" autocapitalize="characters" style="letter-spacing:6px;font-size:1.5em;text-align:center;">
+          </div>
+          <button class="btn btn-primary btn-full" onclick="handleJoin()">Beitreten →</button>
+        </div>
+
+        <!-- TC: create or join -->
+        <div id="tc-section" style="display:none;">
+          <button class="btn btn-primary btn-full" onclick="handleCreateEvent()">+ Neues Event erstellen</button>
+          <div class="or-divider">oder beitreten</div>
+          <div class="field">
+            <label for="input-tc-code">Event-Code</label>
+            <input type="text" id="input-tc-code" placeholder="ABC123" maxlength="6"
+              autocomplete="off" autocapitalize="characters" style="letter-spacing:6px;font-size:1.5em;text-align:center;">
+          </div>
+          <button class="btn btn-outline btn-full" onclick="handleTCJoin()">Beitreten</button>
+        </div>
+
+        <div id="login-error" class="error-msg"></div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== MAP SCREEN ===================== -->
+  <div id="screen-map" class="screen">
+
+    <!-- Map fills everything -->
+    <div id="map"></div>
+
+    <!-- Top bar -->
+    <header class="top-bar">
+      <div class="top-left">
+        <div class="logo-cross mini">
+          <div class="cross-h"></div>
+          <div class="cross-v"></div>
+        </div>
+        <span id="event-name-display" class="event-name">Sammlung</span>
+      </div>
+      <div class="top-right">
+        <button class="chip" id="code-chip" onclick="copyEventCode()" title="Code kopieren">
+          <span id="event-code-display">------</span>
+        </button>
+        <button class="chip" id="btn-pause" onclick="togglePause()" style="display:none;">
+          ⏸ Pause
+        </button>
+      </div>
+    </header>
+
+    <!-- Bottom action bar -->
+    <footer class="bottom-bar">
+      <!-- TC actions -->
+      <div id="tc-controls" style="display:none;" class="bar-group">
+        <button class="bar-btn" onclick="openTCPanel()">⚙️ Teams</button>
+        <button class="bar-btn" id="btn-draw" onclick="toggleDrawing()">✏️ Gebiet</button>
+        <button class="bar-btn" onclick="centerOnAll()">🗺️ Übersicht</button>
+      </div>
+      <!-- Member actions -->
+      <div id="member-controls" class="bar-group" style="display:none;">
+        <button class="bar-btn bar-btn-green" id="btn-mark" onclick="toggleMarkMode()">🏠 Haus</button>
+        <button class="bar-btn" onclick="sharePickupLocation()">📍 Abholort</button>
+        <button class="bar-btn" onclick="centerOnMe()">🎯 Standort</button>
+      </div>
+    </footer>
+
+    <!-- Mark-mode hint bar -->
+    <div id="mark-hint" class="hint-bar" style="display:none;">
+      <span>Tippe auf ein Haus zum Markieren</span>
+      <button onclick="toggleMarkMode()">✕ Abbrechen</button>
+    </div>
+
+    <!-- Street name toast -->
+    <div id="street-toast" class="street-toast" style="display:none;">
+      <span id="street-name-text"></span>
+      <button onclick="copyStreetName()">📋 Kopieren</button>
+      <button class="close-btn" onclick="hideStreetToast()">✕</button>
+    </div>
+
+    <!-- PAUSE overlay -->
+    <div id="pause-overlay" class="pause-overlay" style="display:none;">
+      <div class="pause-box">
+        <div class="pause-icon">⏸</div>
+        <div class="pause-title">Pause</div>
+        <div class="pause-sub">Dein Standort ist für andere <strong>nicht sichtbar</strong></div>
+        <button class="btn btn-primary" onclick="togglePause()">▶ Weiter</button>
+      </div>
+    </div>
+
+    <!-- House mark input popup -->
+    <div id="house-popup" class="house-popup" style="display:none;">
+      <div class="house-popup-inner">
+        <div class="house-popup-title">🏠 Haus markieren</div>
+        <div class="field">
+          <label>Straße (optional)</label>
+          <input type="text" id="house-street-input" placeholder="z.B. Hauptstraße" autocomplete="street-address">
+        </div>
+        <div class="field">
+          <label>Hausnummer (optional)</label>
+          <input type="text" id="house-number-input" placeholder="z.B. 12a" style="max-width:140px;">
+        </div>
+        <div class="popup-actions">
+          <button class="btn btn-outline" onclick="cancelHouseMark()">Abbrechen</button>
+          <button class="btn btn-green" onclick="confirmHouseMark()">✅ Bestätigen</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ===================== TC PANEL ===================== -->
+  <div id="tc-panel" class="bottom-sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-header">
+      <h2>Team-Verwaltung</h2>
+      <button class="sheet-close" onclick="closeTCPanel()">✕</button>
+    </div>
+    <div class="sheet-body">
+
+      <section class="panel-section">
+        <h3>Event-Code</h3>
+        <div class="code-box" onclick="copyEventCode()">
+          <span id="tc-code-big">------</span>
+          <span class="copy-label">Tippen zum Kopieren &amp; Teilen</span>
+        </div>
+        <button class="btn btn-outline btn-sm" onclick="shareEventCode()">📤 Code teilen</button>
+      </section>
+
+      <section class="panel-section">
+        <div class="section-header">
+          <h3>Teams</h3>
+          <button class="btn btn-sm btn-primary" onclick="addTeam()">+ Team</button>
+        </div>
+        <div id="teams-list">
+          <p class="empty-hint">Noch keine Teams. Erstelle Teams und zeichne ihre Gebiete auf der Karte ein.</p>
+        </div>
+      </section>
+
+      <section class="panel-section">
+        <h3>Mitglieder online</h3>
+        <div id="members-list">
+          <p class="empty-hint">Noch niemand beigetreten.</p>
+        </div>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- Backdrop -->
+  <div id="backdrop" class="backdrop" style="display:none;" onclick="closeAllPanels()"></div>
+
+  <!-- Toast notification -->
+  <div id="toast" class="toast" style="display:none;"></div>
+
+  <!-- ===================== SCRIPTS ===================== -->
+  <!-- Supabase JS SDK -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+
+  <!-- App config & logic -->
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+
+  <!-- Google Maps (loads last, calls onMapsReady callback) -->
+  <script>
+    // Replace DEIN_GOOGLE_MAPS_API_KEY with your actual key in firebase-config.js
+    const mapsScript = document.createElement('script');
+    mapsScript.src = `https://maps.googleapis.com/maps/api/js?key=${window.GOOGLE_MAPS_KEY || 'DEIN_KEY'}&libraries=drawing,places&callback=onMapsReady&loading=async`;
+    mapsScript.async = true;
+    mapsScript.defer = true;
+    document.head.appendChild(mapsScript);
+  </script>
+
+  <!-- PWA Service Worker -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch(() => {});
+      });
+    }
+  </script>
+
+</body>
+</html>

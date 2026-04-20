@@ -1,0 +1,908 @@
+/* =========================================
+   MALTESER SAMMLUNG APP — app.js
+   PWA | Supabase Realtime | Google Maps
+   ─────────────────────────────────────────
+   Kein Geocoding. Standort alle 30 s.
+   Pause blendet Standort aus.
+   ========================================= */
+
+'use strict';
+
+// ─── Supabase Client ────────────────────────────────────────────────────────
+const db = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON);
+
+// ─── Team-Farben ─────────────────────────────────────────────────────────────
+const COLORS = [
+  '#E30613','#1565C0','#2E7D32','#E65100',
+  '#6A1B9A','#00838F','#558B2F','#4527A0',
+];
+
+// ─── App-State ───────────────────────────────────────────────────────────────
+const S = {
+  user:           null,   // { uid, name, role, teamId }
+  event:          null,   // { id, name, code }
+  map:            null,
+  drawingMgr:     null,
+  isDrawing:      false,
+  isMarkMode:     false,
+  isPaused:       false,
+  locInterval:    null,
+  currentLat:     null,
+  currentLng:     null,
+  pendingMarkPos: null,
+  teamPolygons:   {},
+  memberMarkers:  {},
+  visitedMarkers: [],
+  teams:          {},     // id → row
+  members:        {},     // uid → row
+  ownMarker:      null,
+  streetToastTimer: null,
+  currentStreet:  '',
+  mapsReady:      false,
+  authReady:      false,
+  channels:       [],     // Supabase Realtime channels zum Aufräumen
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  BOOT
+// ─────────────────────────────────────────────────────────────────────────────
+
+window.onMapsReady = function () {
+  S.mapsReady = true;
+  tryBoot();
+};
+
+(async () => {
+  // Anonyme Supabase-Session holen oder neu erstellen
+  let { data: { session } } = await db.auth.getSession();
+  if (!session) {
+    const res = await db.auth.signInAnonymously();
+    session = res.data?.session;
+  }
+  if (!session) {
+    setLoadingText('Auth-Fehler – bitte Seite neu laden.'); return;
+  }
+  S.userId = session.user.id;
+  S.authReady = true;
+  tryBoot();
+})();
+
+function tryBoot() {
+  if (!S.mapsReady || !S.authReady) return;
+
+  const saved = sessionStorage.getItem('malt_session');
+  if (saved) {
+    try {
+      const sess = JSON.parse(saved);
+      S.user  = sess.user;
+      S.event = sess.event;
+      hideLoading();
+      enterApp();
+      return;
+    } catch (_) {
+      sessionStorage.removeItem('malt_session');
+    }
+  }
+  hideLoading();
+  showScreen('login');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  LOADING / SCREENS / TOAST
+// ─────────────────────────────────────────────────────────────────────────────
+
+function hideLoading()      { id('loading').style.display = 'none'; }
+function showLoading(t)     { setLoadingText(t); id('loading').style.display = 'flex'; }
+function setLoadingText(t)  { id('loading-text').textContent = t; }
+
+function showScreen(name) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  const el = id('screen-' + name);
+  if (el) el.classList.add('active');
+}
+
+function showToast(msg) {
+  const el = id('toast');
+  el.textContent = msg;
+  el.style.display = 'block';
+  clearTimeout(el._t);
+  el.style.animation = 'none';
+  void el.offsetWidth;
+  el.style.animation = '';
+  el._t = setTimeout(() => { el.style.display = 'none'; }, 2600);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  LOGIN
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _role = 'member';
+
+function selectRole(role) {
+  _role = role;
+  document.querySelectorAll('.role-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.role === role)
+  );
+  id('join-section').style.display = role === 'member' ? 'block' : 'none';
+  id('tc-section').style.display   = role === 'tc'     ? 'block' : 'none';
+  loginError('');
+}
+
+function loginError(msg) {
+  const el = id('login-error');
+  el.textContent = msg;
+  el.classList.toggle('visible', !!msg);
+}
+
+async function handleJoin() {
+  const name = val('input-name');
+  const code = val('input-code').toUpperCase();
+  if (!name) { loginError('Bitte deinen Namen eingeben.'); return; }
+  if (code.length < 4) { loginError('Bitte einen gültigen Event-Code eingeben.'); return; }
+  await joinEvent(name, code, 'member');
+}
+
+async function handleCreateEvent() {
+  const name = val('input-name');
+  if (!name) { loginError('Bitte deinen Namen eingeben.'); return; }
+  showLoading('Erstelle Event…');
+  try {
+    const code      = genCode();
+    const eventName = 'Sammlung ' + new Date().toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+
+    const { data, error } = await db.from('events').insert({
+      name: eventName, code, created_by: S.userId
+    }).select().single();
+
+    if (error) throw error;
+
+    S.event = { id: data.id, name: data.name, code: data.code };
+    S.user  = { uid: S.userId, name, role: 'tc', teamId: null };
+
+    await db.from('participants').upsert(
+      { event_id: data.id, user_uid: S.userId, name, role: 'tc' },
+      { onConflict: 'event_id,user_uid' }
+    );
+
+    saveSession();
+    hideLoading();
+    enterApp();
+  } catch (e) {
+    hideLoading();
+    loginError('Fehler beim Erstellen. Bitte erneut versuchen.');
+    console.error(e);
+  }
+}
+
+async function handleTCJoin() {
+  const name = val('input-name');
+  const code = val('input-tc-code').toUpperCase();
+  if (!name) { loginError('Bitte deinen Namen eingeben.'); return; }
+  if (code.length < 4) { loginError('Bitte Event-Code eingeben.'); return; }
+  await joinEvent(name, code, 'tc');
+}
+
+async function joinEvent(name, code, role) {
+  showLoading('Verbinde…');
+  try {
+    const { data, error } = await db.from('events').select().eq('code', code).single();
+    if (error || !data) {
+      hideLoading(); loginError('Event-Code nicht gefunden.'); return;
+    }
+
+    S.event = { id: data.id, name: data.name, code: data.code };
+    S.user  = { uid: S.userId, name, role, teamId: null };
+
+    const { data: existing } = await db.from('participants')
+      .select('team_id').eq('event_id', data.id).eq('user_uid', S.userId).single();
+
+    if (existing?.team_id) S.user.teamId = existing.team_id;
+
+    await db.from('participants').upsert(
+      { event_id: data.id, user_uid: S.userId, name, role },
+      { onConflict: 'event_id,user_uid' }
+    );
+
+    saveSession();
+    hideLoading();
+    enterApp();
+  } catch (e) {
+    hideLoading();
+    loginError('Verbindungsfehler. Bitte erneut versuchen.');
+    console.error(e);
+  }
+}
+
+function saveSession() {
+  sessionStorage.setItem('malt_session', JSON.stringify({ user: S.user, event: S.event }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ENTER APP
+// ─────────────────────────────────────────────────────────────────────────────
+
+function enterApp() {
+  showScreen('map');
+
+  const isTc = S.user.role === 'tc';
+  id('tc-controls').style.display     = isTc ? 'flex' : 'none';
+  id('member-controls').style.display = 'flex';
+  id('btn-pause').style.display       = isTc ? 'none' : 'inline-flex';
+
+  id('event-name-display').textContent = S.event.name;
+  id('event-code-display').textContent = S.event.code;
+  id('tc-code-big').textContent        = S.event.code;
+
+  initMap();
+  subscribeAreas();
+  subscribeLocations();
+  subscribeVisited();
+  subscribeMembers();
+  startLocTracking();
+
+  window.addEventListener('beforeunload', clearMyLoc);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  GOOGLE MAPS
+// ─────────────────────────────────────────────────────────────────────────────
+
+function initMap() {
+  S.map = new google.maps.Map(id('map'), {
+    zoom: 15,
+    center: { lat: 48.2085, lng: 16.3721 },
+    mapTypeId: google.maps.MapTypeId.ROADMAP,
+    disableDefaultUI: true,
+    gestureHandling: 'greedy',
+    clickableIcons: true,
+    styles: [
+      { featureType: 'poi',     elementType: 'labels', stylers: [{ visibility: 'off' }] },
+      { featureType: 'transit', elementType: 'labels', stylers: [{ visibility: 'off' }] },
+    ],
+  });
+
+  S.map.addListener('click', onMapClick);
+
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(pos => {
+      S.currentLat = pos.coords.latitude;
+      S.currentLng = pos.coords.longitude;
+      S.map.setCenter({ lat: S.currentLat, lng: S.currentLng });
+      updateOwnMarker(S.currentLat, S.currentLng);
+    }, null, { enableHighAccuracy: true, timeout: 8000 });
+  }
+}
+
+function onMapClick(evt) {
+  if (!S.isMarkMode) return;
+  S.pendingMarkPos = { lat: evt.latLng.lat(), lng: evt.latLng.lng() };
+
+  // Straßenname aus angeklicktem Karten-Feature lesen (kein Geocoding)
+  if (evt.placeId) {
+    const svc = new google.maps.places.PlacesService(S.map);
+    svc.getDetails({ placeId: evt.placeId, fields: ['name', 'types'] }, (place, status) => {
+      let street = '';
+      if (status === 'OK' && place) {
+        const t = place.types || [];
+        if (t.includes('route') || t.includes('street_address') || t.includes('premise')) {
+          street = place.name;
+        }
+      }
+      openHousePopup(street);
+    });
+  } else {
+    openHousePopup('');
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  LOCATION TRACKING  (alle 30 s)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function startLocTracking() {
+  fetchAndSendLoc();
+  S.locInterval = setInterval(fetchAndSendLoc, 30_000);
+}
+
+function fetchAndSendLoc() {
+  if (S.isPaused || !navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      S.currentLat = pos.coords.latitude;
+      S.currentLng = pos.coords.longitude;
+      sendMyLoc(S.currentLat, S.currentLng);
+      updateOwnMarker(S.currentLat, S.currentLng);
+    },
+    null,
+    { enableHighAccuracy: false, timeout: 10_000, maximumAge: 25_000 }
+  );
+}
+
+async function sendMyLoc(lat, lng) {
+  if (S.isPaused || !S.event) return;
+  await db.from('locations').upsert({
+    event_id:   S.event.id,
+    user_uid:   S.user.uid,
+    lat, lng,
+    name:       S.user.name,
+    role:       S.user.role,
+    team_id:    S.user.teamId || null,
+    is_paused:  false,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'event_id,user_uid' });
+}
+
+async function clearMyLoc() {
+  if (!S.event) return;
+  await db.from('locations')
+    .update({ is_paused: true, updated_at: new Date().toISOString() })
+    .eq('event_id', S.event.id)
+    .eq('user_uid', S.user.uid);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  OWN MARKER
+// ─────────────────────────────────────────────────────────────────────────────
+
+function updateOwnMarker(lat, lng) {
+  if (!S.map) return;
+  const pos = { lat, lng };
+  if (!S.ownMarker) {
+    S.ownMarker = new google.maps.Marker({
+      position: pos, map: S.map, zIndex: 1000,
+      title: S.user.name + ' (Ich)',
+      icon: {
+        path: google.maps.SymbolPath.CIRCLE,
+        scale: 11,
+        fillColor: '#1565C0',
+        fillOpacity: 1,
+        strokeColor: 'white',
+        strokeWeight: 3,
+      },
+    });
+  } else {
+    S.ownMarker.setPosition(pos);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  SUPABASE REALTIME SUBSCRIPTIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+function subscribeLocations() {
+  // Initial laden
+  loadLocations();
+
+  const ch = db.channel(`loc-${S.event.id}`)
+    .on('postgres_changes', {
+      event: '*', schema: 'public', table: 'locations',
+      filter: `event_id=eq.${S.event.id}`,
+    }, payload => {
+      const row = payload.new || payload.old;
+      if (!row) return;
+      const uid = row.user_uid;
+      if (uid === S.user.uid) return;
+
+      const STALE = 6 * 60 * 1000;
+      const age   = Date.now() - new Date(row.updated_at).getTime();
+
+      if (row.is_paused || age > STALE) {
+        removeMemberMarker(uid);
+      } else {
+        upsertMemberMarker(uid, row);
+      }
+    })
+    .subscribe();
+
+  S.channels.push(ch);
+}
+
+async function loadLocations() {
+  const STALE_ISO = new Date(Date.now() - 6 * 60 * 1000).toISOString();
+  const { data } = await db.from('locations')
+    .select('*')
+    .eq('event_id', S.event.id)
+    .eq('is_paused', false)
+    .gte('updated_at', STALE_ISO);
+
+  (data || []).forEach(row => {
+    if (row.user_uid !== S.user.uid) upsertMemberMarker(row.user_uid, row);
+  });
+}
+
+function subscribeAreas() {
+  loadAreas();
+
+  const ch = db.channel(`teams-${S.event.id}`)
+    .on('postgres_changes', {
+      event: '*', schema: 'public', table: 'teams',
+      filter: `event_id=eq.${S.event.id}`,
+    }, () => loadAreas())
+    .subscribe();
+
+  S.channels.push(ch);
+}
+
+async function loadAreas() {
+  const { data } = await db.from('teams').select('*').eq('event_id', S.event.id);
+  const rows = data || [];
+
+  // Teams in State mergen
+  S.teams = {};
+  rows.forEach(t => { S.teams[t.id] = t; });
+
+  // Polygone neu zeichnen
+  Object.values(S.teamPolygons).forEach(p => p.setMap(null));
+  S.teamPolygons = {};
+  rows.forEach(t => { if (t.area_paths) drawArea(t); });
+
+  if (S.user.role === 'tc') renderTeamsList();
+}
+
+function subscribeVisited() {
+  loadVisited();
+
+  const ch = db.channel(`visited-${S.event.id}`)
+    .on('postgres_changes', {
+      event: 'INSERT', schema: 'public', table: 'visited',
+      filter: `event_id=eq.${S.event.id}`,
+    }, payload => {
+      if (payload.new) addVisitedMarker(payload.new);
+    })
+    .subscribe();
+
+  S.channels.push(ch);
+}
+
+async function loadVisited() {
+  const { data } = await db.from('visited').select('*').eq('event_id', S.event.id);
+  S.visitedMarkers.forEach(m => m.setMap(null));
+  S.visitedMarkers = [];
+  (data || []).forEach(addVisitedMarker);
+}
+
+function subscribeMembers() {
+  loadMembers();
+
+  const ch = db.channel(`members-${S.event.id}`)
+    .on('postgres_changes', {
+      event: '*', schema: 'public', table: 'participants',
+      filter: `event_id=eq.${S.event.id}`,
+    }, payload => {
+      if (!payload.new) return;
+      const row = payload.new;
+      S.members[row.user_uid] = row;
+      // Eigenes teamId aktualisieren
+      if (row.user_uid === S.user.uid && row.team_id) {
+        S.user.teamId = row.team_id;
+        saveSession();
+        // Gebiete neu zeichnen (eigenes hervorgehoben)
+        loadAreas();
+      }
+      if (S.user.role === 'tc') renderMembersList();
+    })
+    .subscribe();
+
+  S.channels.push(ch);
+}
+
+async function loadMembers() {
+  const { data } = await db.from('participants').select('*').eq('event_id', S.event.id);
+  S.members = {};
+  (data || []).forEach(m => { S.members[m.user_uid] = m; });
+  if (S.user.role === 'tc') renderMembersList();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MEMBER MARKERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+function upsertMemberMarker(uid, row) {
+  const pos   = { lat: row.lat, lng: row.lng };
+  const color = row.team_id ? teamColor(row.team_id) : '#555';
+  const isTC  = row.role === 'tc';
+
+  if (!S.memberMarkers[uid]) {
+    const marker = new google.maps.Marker({
+      position: pos, map: S.map,
+      zIndex: isTC ? 900 : 800,
+      title: row.name,
+      label: { text: (row.name || '?')[0].toUpperCase(), color: 'white', fontSize: '11px', fontWeight: 'bold' },
+      icon: {
+        path: google.maps.SymbolPath.CIRCLE,
+        scale: 14,
+        fillColor: isTC ? '#333' : color,
+        fillOpacity: 1,
+        strokeColor: 'white',
+        strokeWeight: 3,
+      },
+    });
+    const info = new google.maps.InfoWindow({
+      content: `<div style="padding:4px 8px;font-weight:600;">${row.name}${isTC ? ' 👑' : ''}</div>`,
+    });
+    marker.addListener('click', () => info.open(S.map, marker));
+    S.memberMarkers[uid] = marker;
+  } else {
+    S.memberMarkers[uid].setPosition(pos);
+  }
+}
+
+function removeMemberMarker(uid) {
+  if (S.memberMarkers[uid]) {
+    S.memberMarkers[uid].setMap(null);
+    delete S.memberMarkers[uid];
+  }
+}
+
+function teamColor(teamId) {
+  const keys = Object.keys(S.teams);
+  const idx  = keys.indexOf(teamId);
+  return COLORS[(idx < 0 ? 0 : idx) % COLORS.length];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  AREA POLYGONE
+// ─────────────────────────────────────────────────────────────────────────────
+
+function drawArea(team) {
+  const idx    = Object.keys(S.teams).indexOf(team.id);
+  const color  = COLORS[idx % COLORS.length];
+  const isMine = S.user.teamId === team.id;
+
+  const poly = new google.maps.Polygon({
+    paths:         team.area_paths,
+    strokeColor:   color,
+    strokeOpacity: .9,
+    strokeWeight:  isMine ? 3 : 2,
+    fillColor:     color,
+    fillOpacity:   isMine ? .22 : .08,
+    map:           S.map,
+    clickable:     false,
+  });
+  S.teamPolygons[team.id] = poly;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  DRAWING MANAGER (TC)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function toggleDrawing() {
+  if (!S.drawingMgr) initDrawing();
+  S.isDrawing = !S.isDrawing;
+  id('btn-draw').classList.toggle('active', S.isDrawing);
+  S.drawingMgr.setDrawingMode(S.isDrawing ? google.maps.drawing.OverlayType.POLYGON : null);
+}
+
+function initDrawing() {
+  S.drawingMgr = new google.maps.drawing.DrawingManager({
+    drawingMode:    null,
+    drawingControl: false,
+    polygonOptions: {
+      fillColor: '#E30613', fillOpacity: .2,
+      strokeColor: '#E30613', strokeWeight: 2,
+      editable: true,
+    },
+  });
+  S.drawingMgr.setMap(S.map);
+
+  google.maps.event.addListener(S.drawingMgr, 'polygoncomplete', poly => {
+    S.drawingMgr.setDrawingMode(null);
+    S.isDrawing = false;
+    id('btn-draw').classList.remove('active');
+    assignAreaToTeam(poly);
+  });
+}
+
+function assignAreaToTeam(poly) {
+  const teamKeys = Object.keys(S.teams);
+
+  const save = async (teamId) => {
+    const paths = poly.getPath().getArray().map(ll => ({ lat: ll.lat(), lng: ll.lng() }));
+    poly.setMap(null);
+    await db.from('teams').update({ area_paths: paths }).eq('id', teamId);
+    showToast('✅ Gebiet gespeichert');
+  };
+
+  if (!teamKeys.length) {
+    const name = prompt('Noch kein Team – neuen Namen eingeben:');
+    if (!name) { poly.setMap(null); return; }
+    createTeam(name.trim()).then(save);
+    return;
+  }
+
+  const opts = teamKeys.map((tid, i) => `${i + 1}: ${S.teams[tid].name}`).join('\n');
+  const inp  = prompt(`Welchem Team gehört dieses Gebiet?\n\n${opts}\n\nNummer eingeben:`);
+  if (!inp) { poly.setMap(null); return; }
+  const idx = parseInt(inp) - 1;
+  if (idx < 0 || idx >= teamKeys.length) { poly.setMap(null); return; }
+  save(teamKeys[idx]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  VISITED HOUSES
+// ─────────────────────────────────────────────────────────────────────────────
+
+function addVisitedMarker(row) {
+  if (!S.map) return;
+  const label = [row.street, row.number].filter(Boolean).join(' ');
+  const marker = new google.maps.Marker({
+    position: { lat: row.lat, lng: row.lng },
+    map: S.map, zIndex: 500,
+    title: label || 'Besucht',
+    icon: {
+      path: google.maps.SymbolPath.CIRCLE,
+      scale: 8,
+      fillColor: '#2E7D32', fillOpacity: .9,
+      strokeColor: 'white', strokeWeight: 2,
+    },
+  });
+  const time = new Date(row.created_at).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+  const info = new google.maps.InfoWindow({
+    content: `<div style="padding:4px 8px;">
+      ${label ? `<strong>${esc(label)}</strong><br>` : ''}
+      <small style="color:#777;">Besucht ${time} · ${esc(row.marked_by_name || '')}</small>
+    </div>`,
+  });
+  marker.addListener('click', () => info.open(S.map, marker));
+  S.visitedMarkers.push(marker);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MARK MODE
+// ─────────────────────────────────────────────────────────────────────────────
+
+function toggleMarkMode() {
+  S.isMarkMode = !S.isMarkMode;
+  id('btn-mark').classList.toggle('active', S.isMarkMode);
+  id('mark-hint').style.display = S.isMarkMode ? 'flex' : 'none';
+  S.map?.setOptions({ cursor: S.isMarkMode ? 'crosshair' : null });
+  if (!S.isMarkMode) closeHousePopup();
+}
+
+function openHousePopup(street) {
+  id('house-street-input').value  = street || '';
+  id('house-number-input').value  = '';
+  id('house-popup').style.display = 'flex';
+  setTimeout(() => id('house-street-input').focus(), 100);
+}
+
+function closeHousePopup() {
+  id('house-popup').style.display = 'none';
+  S.pendingMarkPos = null;
+}
+
+function cancelHouseMark() { closeHousePopup(); }
+
+async function confirmHouseMark() {
+  if (!S.pendingMarkPos) return;
+  const street = id('house-street-input').value.trim();
+  const number = id('house-number-input').value.trim();
+  const { lat, lng } = S.pendingMarkPos;
+
+  const { error } = await db.from('visited').insert({
+    event_id:       S.event.id,
+    lat, lng,
+    street:         street || null,
+    number:         number || null,
+    team_id:        S.user.teamId || null,
+    marked_by:      S.user.uid,
+    marked_by_name: S.user.name,
+  });
+
+  if (error) { console.error(error); showToast('Fehler beim Speichern'); return; }
+
+  closeHousePopup();
+  if (street) showStreetToast(`${street}${number ? ' ' + number : ''}`);
+  showToast('✅ Haus markiert');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  STREET TOAST
+// ─────────────────────────────────────────────────────────────────────────────
+
+function showStreetToast(name) {
+  S.currentStreet = name;
+  id('street-name-text').textContent = name;
+  id('street-toast').style.display   = 'flex';
+  clearTimeout(S.streetToastTimer);
+  S.streetToastTimer = setTimeout(hideStreetToast, 12_000);
+}
+function hideStreetToast() { id('street-toast').style.display = 'none'; }
+function copyStreetName()  { copyText(S.currentStreet); showToast('📋 Straßenname kopiert!'); }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  PAUSE MODUS
+// ─────────────────────────────────────────────────────────────────────────────
+
+function togglePause() {
+  S.isPaused = !S.isPaused;
+  const btn = id('btn-pause');
+  if (S.isPaused) {
+    clearMyLoc();
+    id('pause-overlay').style.display = 'flex';
+    btn.textContent = '▶ Weiter';
+    btn.classList.add('paused');
+  } else {
+    id('pause-overlay').style.display = 'none';
+    btn.textContent = '⏸ Pause';
+    btn.classList.remove('paused');
+    fetchAndSendLoc();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ABHOLORT TEILEN
+// ─────────────────────────────────────────────────────────────────────────────
+
+function sharePickupLocation() {
+  if (!S.currentLat || !S.currentLng) { showToast('Standort wird noch ermittelt…'); return; }
+  const url  = `https://maps.google.com/maps?q=${S.currentLat},${S.currentLng}`;
+  const text = `📍 Abholort:\n${url}`;
+  if (navigator.share) {
+    navigator.share({ title: 'Mein Abholort', text, url }).catch(() => {});
+  } else {
+    copyText(text);
+    showToast('📋 Abholort-Link kopiert!');
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MAP CONTROLS
+// ─────────────────────────────────────────────────────────────────────────────
+
+function centerOnMe() {
+  if (S.currentLat && S.map) {
+    S.map.panTo({ lat: S.currentLat, lng: S.currentLng });
+    S.map.setZoom(17);
+  } else {
+    showToast('Standort wird noch ermittelt…');
+  }
+}
+
+function centerOnAll() {
+  if (!S.map) return;
+  const bounds = new google.maps.LatLngBounds();
+  let n = 0;
+  Object.values(S.teamPolygons).forEach(p => p.getPath().forEach(ll => { bounds.extend(ll); n++; }));
+  Object.values(S.memberMarkers).forEach(m => { bounds.extend(m.getPosition()); n++; });
+  if (S.ownMarker) { bounds.extend(S.ownMarker.getPosition()); n++; }
+  if (n > 0) S.map.fitBounds(bounds, 60);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  EVENT-CODE
+// ─────────────────────────────────────────────────────────────────────────────
+
+function copyEventCode() { copyText(S.event.code); showToast(`Code "${S.event.code}" kopiert!`); }
+
+function shareEventCode() {
+  const text = `Malteser Sammlung\nEvent-Code: ${S.event.code}\n\nApp öffnen: ${location.href}`;
+  if (navigator.share) {
+    navigator.share({ title: 'Malteser Sammlung', text }).catch(() => {});
+  } else {
+    copyText(text);
+    showToast('📋 Einladungstext kopiert!');
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  TC PANEL
+// ─────────────────────────────────────────────────────────────────────────────
+
+function openTCPanel()   { id('tc-panel').classList.add('open');    id('backdrop').style.display = 'block'; }
+function closeTCPanel()  { id('tc-panel').classList.remove('open'); id('backdrop').style.display = 'none'; }
+function closeAllPanels(){ closeTCPanel(); }
+
+// ─── Teams ────────────────────────────────────────────────────────────────────
+
+async function createTeam(name) {
+  const { data, error } = await db.from('teams')
+    .insert({ event_id: S.event.id, name })
+    .select().single();
+  if (error) throw error;
+  return data.id;
+}
+
+function addTeam() {
+  const name = prompt('Team-Name (z.B. "Team 1" oder "Anna & Max"):');
+  if (!name?.trim()) return;
+  createTeam(name.trim()).then(() => showToast('✅ Team erstellt')).catch(console.error);
+}
+
+async function deleteTeam(teamId) {
+  if (!confirm('Team und Gebiet wirklich löschen?')) return;
+  await db.from('teams').delete().eq('id', teamId);
+}
+
+function renderTeamsList() {
+  const el   = id('teams-list');
+  const keys = Object.keys(S.teams);
+  if (!keys.length) {
+    el.innerHTML = '<p class="empty-hint">Noch keine Teams.</p>'; return;
+  }
+  el.innerHTML = keys.map((tid, i) => {
+    const t     = S.teams[tid];
+    const color = COLORS[i % COLORS.length];
+    const mems  = Object.values(S.members)
+      .filter(m => m.team_id === tid).map(m => m.name).join(', ') || 'Niemand';
+    return `
+      <div class="team-item">
+        <div class="team-dot" style="background:${color}"></div>
+        <div class="team-info">
+          <div class="team-name">${esc(t.name)}</div>
+          <div class="team-sub">${esc(mems)}</div>
+        </div>
+        <button class="team-del" onclick="deleteTeam('${tid}')">🗑</button>
+      </div>`;
+  }).join('');
+}
+
+// ─── Members ─────────────────────────────────────────────────────────────────
+
+async function assignMemberTeam(uid, teamId) {
+  await db.from('participants')
+    .update({ team_id: teamId || null })
+    .eq('event_id', S.event.id)
+    .eq('user_uid', uid);
+}
+
+function renderMembersList() {
+  const el      = id('members-list');
+  const entries = Object.entries(S.members);
+  if (!entries.length) {
+    el.innerHTML = '<p class="empty-hint">Noch niemand beigetreten.</p>'; return;
+  }
+  const teamOpts = Object.entries(S.teams)
+    .map(([tid, t]) => `<option value="${tid}">${esc(t.name)}</option>`).join('');
+
+  el.innerHTML = entries.map(([uid, m]) => {
+    const init   = (m.name || '?')[0].toUpperCase();
+    const online = S.memberMarkers[uid] ? '🟢' : '⚪';
+    const selVal = m.team_id || '';
+    const opts   = teamOpts.replace(`value="${selVal}"`, `value="${selVal}" selected`);
+    return `
+      <div class="member-item">
+        <div class="member-avatar">${init}</div>
+        <div class="member-info">
+          <div class="member-name">${online} ${esc(m.name)}${m.role === 'tc' ? ' 👑' : ''}</div>
+          <div class="member-status">${m.team_id && S.teams[m.team_id] ? esc(S.teams[m.team_id].name) : 'Kein Team'}</div>
+        </div>
+        <select class="team-select" onchange="assignMemberTeam('${uid}', this.value)">
+          <option value="">Team wählen</option>
+          ${opts}
+        </select>
+      </div>`;
+  }).join('');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  UTILITIES
+// ─────────────────────────────────────────────────────────────────────────────
+
+function id(i)  { return document.getElementById(i); }
+function val(i) { return (id(i)?.value || '').trim(); }
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function genCode() {
+  const c = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let s = '';
+  for (let i = 0; i < 6; i++) s += c[Math.floor(Math.random() * c.length)];
+  return s;
+}
+
+function copyText(t) {
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(t).catch(() => legacyCopy(t));
+  } else {
+    legacyCopy(t);
+  }
+}
+
+function legacyCopy(t) {
+  const el = Object.assign(document.createElement('textarea'),
+    { value: t, style: 'position:fixed;opacity:0' });
+  document.body.appendChild(el);
+  el.select();
+  document.execCommand('copy');
+  document.body.removeChild(el);
+}

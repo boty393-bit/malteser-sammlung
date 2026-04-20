@@ -10,6 +10,8 @@
   <title>Malteser Sammlung</title>
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css">
   <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -212,22 +214,19 @@
   <div id="toast" class="toast" style="display:none;"></div>
 
   <!-- ===================== SCRIPTS ===================== -->
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css">
+
   <!-- Supabase JS SDK -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <!-- Leaflet + Draw plugin -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
 
   <!-- App config & logic -->
   <script src="config.js"></script>
   <script src="app.js"></script>
-
-  <!-- Google Maps (loads last, calls onMapsReady callback) -->
-  <script>
-    // Replace DEIN_GOOGLE_MAPS_API_KEY with your actual key in firebase-config.js
-    const mapsScript = document.createElement('script');
-    mapsScript.src = `https://maps.googleapis.com/maps/api/js?key=${window.GOOGLE_MAPS_KEY || 'DEIN_KEY'}&libraries=drawing,places&callback=onMapsReady&loading=async`;
-    mapsScript.async = true;
-    mapsScript.defer = true;
-    document.head.appendChild(mapsScript);
-  </script>
 
   <!-- PWA Service Worker -->
   <script>
